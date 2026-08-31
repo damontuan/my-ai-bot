@@ -3,8 +3,7 @@ import json
 import time
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
-from google import genai
-from google.genai import types
+from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from linebot.v3 import WebhookHandler
@@ -14,13 +13,13 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = FastAPI()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY)
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -30,7 +29,7 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (GPT-4o-mini 極致穩定版) 運行中！"}
 
 def get_dynamic_knowledge_base():
     global CACHED_KB, LAST_FETCH_TIME
@@ -93,31 +92,28 @@ def handle_message(event):
     
     system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
     
-    response = None
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=user_msg,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt
-                )
-            )
-            break
-        except Exception as e:
-            print(f"Gemini API 嘗試第 {attempt+1} 次遇到尖峰/頻率冷卻，自動重試中... 錯誤訊息: {str(e)}")
-            if attempt < 2:
-                time.sleep(5)
-            else:
-                raise e
-    
-    if response and response.text:
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        reply_text = response.choices[0].message.content
+    except Exception as e:
+        print("❌ OpenAI API 呼叫失敗:", repr(e))
+        reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
+
+    if reply_text:
         with ApiClient(line_config) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=response.text)]
+                    messages=[TextMessage(text=reply_text)]
                 )
             )
 
