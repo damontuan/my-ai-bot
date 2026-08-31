@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
 from google import genai
@@ -23,7 +24,6 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 讀取 Google 試算表「AI 知識庫」分頁
 def get_dynamic_knowledge_base():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -62,7 +62,6 @@ async def callback(request: Request, x_line_signature: str = Header(None)):
 def handle_message(event):
     user_msg = event.message.text
     
-    # 動態獲取最新試算表知識庫
     live_kb = get_dynamic_knowledge_base()
     
     system_prompt = f"""
@@ -75,22 +74,34 @@ def handle_message(event):
     若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。
     """
     
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=user_msg,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt
-        )
-    )
-    
-    with ApiClient(line_config) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=response.text)]
+    # 🛡️ 商業級「自動背後重試機制」：若遇到 503 全球流量尖峰，自動背後重試最多 3 次
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=user_msg,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt
+                )
             )
-        )
+            break # 成功拿到回應，立刻跳出迴圈
+        except Exception as e:
+            print(f"Gemini API 嘗試第 {attempt+1} 次遇到尖峰，自動重試中... 錯誤訊息: {str(e)}")
+            if attempt < 2:
+                time.sleep(0.5) # 靜悄悄等候 0.5 秒後重試
+            else:
+                raise e # 嘗試 3 次皆失敗才拋出例外
+    
+    if response and response.text:
+        with ApiClient(line_config) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=response.text)]
+                )
+            )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
