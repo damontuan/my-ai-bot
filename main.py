@@ -93,11 +93,12 @@ def handle_message(event):
     
     system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
     
+    # 🛡️ 正式最新 gemini-3.6-flash ＋ 3 秒智慧背後重試防護
     response = None
     for attempt in range(3):
         try:
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3.6-flash",
                 contents=user_msg,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt
@@ -105,9 +106,9 @@ def handle_message(event):
             )
             break
         except Exception as e:
-            print(f"Gemini API 嘗試第 {attempt+1} 次遇到尖峰，自動重試中... 錯誤訊息: {str(e)}")
+            print(f"Gemini API 嘗試第 {attempt+1} 次遇到流量冷卻，自動重試中... 錯誤訊息: {str(e)}")
             if attempt < 2:
-                time.sleep(0.5)
+                time.sleep(3) # 自動等待 3 秒重試
             else:
                 raise e
     
