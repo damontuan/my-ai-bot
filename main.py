@@ -1,7 +1,8 @@
 import os
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
@@ -9,16 +10,18 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = FastAPI()
 
-# 從雲端環境變數讀取金鑰
+# 讀取環境變數
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-genai.configure(api_key=GEMINI_API_KEY)
+# 初始化 Google 最新版 GenAI Client
+client = genai.Client(api_key=GEMINI_API_KEY)
+
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 知識庫與提示詞
+# 知識庫與人設
 SYSTEM_PROMPT = """
 你是「極上居酒屋」的專屬 AI 智慧客服店長。
 請依據以下店家資料，用熱情、有禮貌的口氣回應用戶：
@@ -27,7 +30,7 @@ SYSTEM_PROMPT = """
 - 招牌推薦：A5 和牛盛合 ($1680)、特選厚切牛舌 ($280)
 - 停車：本店無特約，請停對面地下收費停車場。
 """
-model = genai.GenerativeModel("gemini-2.5-flash", system_instruction=SYSTEM_PROMPT)
+
 @app.post("/callback")
 async def callback(request: Request, x_line_signature: str = Header(None)):
     body = (await request.body()).decode("utf-8")
@@ -40,7 +43,15 @@ async def callback(request: Request, x_line_signature: str = Header(None)):
 @line_handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_msg = event.message.text
-    response = model.generate_content(user_msg)
+    
+    # 呼叫 Google 最新官方 SDK
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=user_msg,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT
+        )
+    )
     
     with ApiClient(line_config) as api_client:
         line_bot_api = MessagingApi(api_client)
