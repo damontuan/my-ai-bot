@@ -27,8 +27,7 @@ SYSTEM_PROMPT = """
 - 招牌推薦：A5 和牛盛合 ($1680)、特選厚切牛舌 ($280)
 - 停車：本店無特約，請停對面地下收費停車場。
 """
-model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=SYSTEM_PROMPT)
-
+model = genai.GenerativeModel("gemini-2.5-flash", system_instruction=SYSTEM_PROMPT)
 @app.post("/callback")
 async def callback(request: Request, x_line_signature: str = Header(None)):
     body = (await request.body()).decode("utf-8")
