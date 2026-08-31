@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-google-genai
-openai
+groq
 line-bot-sdk
 gspread
 oauth2client
