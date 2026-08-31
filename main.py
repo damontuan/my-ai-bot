@@ -24,10 +24,9 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 快取機制變數（暫存 5 分鐘，極速回覆）
 CACHED_KB = ""
 LAST_FETCH_TIME = 0
-CACHE_DURATION = 300  # 300 秒 = 5 分鐘
+CACHE_DURATION = 300
 
 @app.get("/")
 def home():
@@ -37,7 +36,6 @@ def get_dynamic_knowledge_base():
     global CACHED_KB, LAST_FETCH_TIME
     current_time = time.time()
     
-    # ⚡ 若距離上次讀取小於 5 分鐘，直接從記憶體返回，零延遲秒回！
     if CACHED_KB and (current_time - LAST_FETCH_TIME < CACHE_DURATION):
         return CACHED_KB
         
@@ -49,7 +47,6 @@ def get_dynamic_knowledge_base():
         
         sh = gc.open_by_key(SPREADSHEET_KEY)
         
-        # 優先讀取「常見問答 (QA)」，若沒有則讀取「AI 知識庫」或第一個分頁
         try:
             worksheet = sh.worksheet("常見問答 (QA)")
         except Exception:
@@ -94,11 +91,36 @@ def handle_message(event):
     
     live_kb = get_dynamic_knowledge_base()
     
-    system_prompt = f"""
-    你是「極上居酒屋」的專屬 AI 智慧客服店長。
-    請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：
+    system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
+    
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=user_msg,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt
+                )
+            )
+            break
+        except Exception as e:
+            print(f"Gemini API 嘗試第 {attempt+1} 次遇到尖峰，自動重試中... 錯誤訊息: {str(e)}")
+            if attempt < 2:
+                time.sleep(0.5)
+            else:
+                raise e
+    
+    if response and response.text:
+        with ApiClient(line_config) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=response.text)]
+                )
+            )
 
-    【最新店家知識庫】
-    {live_kb}
-
-    若用戶詢問的問題不在知識庫
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
