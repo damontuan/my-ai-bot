@@ -3,7 +3,7 @@ import json
 import time
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
-from openai import OpenAI
+from groq import Groq
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from linebot.v3 import WebhookHandler
@@ -13,13 +13,13 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = FastAPI()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -29,7 +29,7 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (GPT-4o-mini 極致穩定版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (Groq 極速免費版) 運行中！"}
 
 def get_dynamic_knowledge_base():
     global CACHED_KB, LAST_FETCH_TIME
@@ -94,7 +94,7 @@ def handle_message(event):
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
@@ -104,7 +104,7 @@ def handle_message(event):
         )
         reply_text = response.choices[0].message.content
     except Exception as e:
-        print("❌ OpenAI API 呼叫失敗:", repr(e))
+        print("❌ Groq API 呼叫失敗:", repr(e))
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
     if reply_text:
@@ -113,7 +113,7 @@ def handle_message(event):
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
+                    messages=[TextMessage(text=TextMessage(text=reply_text))]
                 )
             )
 
