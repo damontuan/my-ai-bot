@@ -24,7 +24,6 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 聰明抓取：相容「常見問答 (QA)」與「AI 知識庫」分頁及各種欄位名稱
 def get_dynamic_knowledge_base():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -48,7 +47,6 @@ def get_dynamic_knowledge_base():
         faq_list = []
         for r in records:
             cat = r.get("分類", "")
-            # 自動相容：問題 / 項目 / 項目/問題 等欄位標題
             q = r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")
             a = r.get("回答", "") or r.get("內容/回答", "") or r.get("內容", "")
             note = r.get("備註", "")
@@ -60,9 +58,10 @@ def get_dynamic_knowledge_base():
         
         return "\n".join(faq_list)
     except Exception as e:
-               print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
+        print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
         import traceback
         traceback.print_exc()
+        return "營業時間：週二至週五 18:00 - 01:00，週六至週日 17:30 - 01:00（週一公休）。"
 
 @app.post("/callback")
 async def callback(request: Request, x_line_signature: str = Header(None)):
@@ -89,7 +88,6 @@ def handle_message(event):
     若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。
     """
     
-    # 自動背後重試機制
     response = None
     for attempt in range(3):
         try:
