@@ -60,8 +60,9 @@ def get_dynamic_knowledge_base():
         
         return "\n".join(faq_list)
     except Exception as e:
-        print("讀取 Google Sheet 失敗:", str(e))
-        return "營業時間：週二至週五 18:00 - 01:00，週六至週日 17:30 - 01:00（週一公休）。"
+               print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
+        import traceback
+        traceback.print_exc()
 
 @app.post("/callback")
 async def callback(request: Request, x_line_signature: str = Header(None)):
