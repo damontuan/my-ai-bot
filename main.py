@@ -10,7 +10,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, ImageMessage
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = FastAPI()
@@ -26,12 +26,13 @@ line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 CACHED_KB = ""
+CACHED_IMAGE_MAP = {}
 LAST_FETCH_TIME = 0
-CACHE_DURATION = 60  # 🔥 縮短為 60 秒（1分鐘），老闆改完答案 1 分鐘內即時生效！
+CACHE_DURATION = 60  # 60 秒快取，即時更新
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (雙頁面連動版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (圖文雙發高階版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -40,17 +41,18 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 def get_dynamic_knowledge_base():
-    global CACHED_KB, LAST_FETCH_TIME
+    global CACHED_KB, CACHED_IMAGE_MAP, LAST_FETCH_TIME
     current_time = time.time()
     
     if CACHED_KB and (current_time - LAST_FETCH_TIME < CACHE_DURATION):
-        return CACHED_KB
+        return CACHED_KB, CACHED_IMAGE_MAP
         
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
         
         faq_list = []
+        image_map = {}
         
         # 1. 讀取主頁面「常見問答 (QA)」
         try:
@@ -67,13 +69,18 @@ def get_dynamic_knowledge_base():
             q = r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")
             a = r.get("回答", "") or r.get("內容/回答", "") or r.get("內容", "")
             note = r.get("備註", "")
+            img_url = r.get("圖片網址", "") or r.get("圖片", "")
             
             if q and a:
                 prefix = f"【{cat}】" if cat else ""
                 suffix = f"（備註：{note}）" if note else ""
                 faq_list.append(f"{prefix}{q}：{a} {suffix}")
+                
+                # 若有設定圖片網址，記錄到圖片映射表中
+                if img_url and str(img_url).startswith("http"):
+                    image_map[str(q).strip()] = str(img_url).strip()
 
-        # 2. ⚡ 自動讀取第二分頁「待補充問題」中老闆填寫的答案！
+        # 2. 讀取第二分頁「待補充問題」
         try:
             supp_sheet = sh.worksheet("待補充問題")
             supp_records = supp_sheet.get_all_records()
@@ -86,14 +93,15 @@ def get_dynamic_knowledge_base():
             print("無待補充問題頁面或讀取跳過:", e)
         
         CACHED_KB = "\n".join(faq_list)
+        CACHED_IMAGE_MAP = image_map
         LAST_FETCH_TIME = current_time
-        return CACHED_KB
+        return CACHED_KB, CACHED_IMAGE_MAP
     except Exception as e:
         print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
-        return CACHED_KB if CACHED_KB else "營業時間：週二至週五 18:00 - 01:00，週六至週日 17:30 - 01:00（週一公休）。"
+        return CACHED_KB if CACHED_KB else ("營業時間：18:00 - 01:00", {})
 
 def log_unanswered_question(question_text: str):
-    """精確累加次數計數器功能"""
+    """智慧去重 ＋ 熱度計數器功能"""
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
@@ -145,7 +153,7 @@ async def callback(request: Request, x_line_signature: str = Header(None)):
 def handle_message(event):
     user_msg = event.message.text
     
-    live_kb = get_dynamic_knowledge_base()
+    live_kb, image_map = get_dynamic_knowledge_base()
     
     system_prompt = f"""
     你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：
@@ -195,13 +203,33 @@ def handle_message(event):
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
+    # 📸 判斷是否需要附帶傳送圖片
+    matched_img_url = None
+    for q_key, img_link in image_map.items():
+        if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and "菜單" in q_key):
+            matched_img_url = img_link
+            break
+
     if reply_text:
         with ApiClient(line_config) as api_client:
             line_bot_api = MessagingApi(api_client)
+            
+            messages_to_send = [TextMessage(text=reply_text)]
+            
+            # 若找到匹配圖片，自動追加傳送圖片訊息！
+            if matched_img_url:
+                messages_to_send.append(
+                    ImageMessage(
+                        original_content_url=matched_img_url,
+                        preview_image_url=matched_img_url
+                    )
+                )
+                print(f"🖼️ 自動追加發送圖片訊息: {matched_img_url}")
+                
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
+                    messages=messages_to_send
                 )
             )
 
