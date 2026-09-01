@@ -92,19 +92,34 @@ def handle_message(event):
     
     system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
     
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg}
-            ],
-            max_tokens=300,
-            temperature=0.7
-        )
-        reply_text = response.choices[0].message.content
-    except Exception as e:
-        print("❌ Groq API 呼叫失敗:", repr(e))
+    # 🛡️ Groq 4 重模型自動輪巡備援
+    models_to_try = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it"
+    ]
+    
+    reply_text = None
+    for m in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                model=m,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg}
+                ],
+                max_tokens=300,
+                temperature=0.7
+            )
+            reply_text = response.choices[0].message.content
+            print(f"✅ 成功使用 Groq 模型 [{m}] 生成回答！")
+            break
+        except Exception as e:
+            print(f"⚠️ 嘗試 Groq 模型 [{m}] 失敗: {repr(e)}")
+            continue
+
+    if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
     if reply_text:
