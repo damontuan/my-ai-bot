@@ -29,7 +29,7 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (Groq 極速免費版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (Groq 動態模型版) 運行中！"}
 
 def get_dynamic_knowledge_base():
     global CACHED_KB, LAST_FETCH_TIME
@@ -92,16 +92,16 @@ def handle_message(event):
     
     system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
     
-    # 🛡️ Groq 4 重模型自動輪巡備援
-    models_to_try = [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it"
-    ]
-    
+    # ⚡ 動態獲取當前 Groq 可用的所有最新模型
+    try:
+        all_models = [m.id for m in client.models.list().data if "whisper" not in m.id]
+        print("🤖 Groq 當前可用模型列表:", all_models)
+    except Exception as e:
+        print("⚠️ 無法獲取模型列表:", repr(e))
+        all_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+
     reply_text = None
-    for m in models_to_try:
+    for m in all_models:
         try:
             response = client.chat.completions.create(
                 model=m,
@@ -116,7 +116,7 @@ def handle_message(event):
             print(f"✅ 成功使用 Groq 模型 [{m}] 生成回答！")
             break
         except Exception as e:
-            print(f"⚠️ 嘗試 Groq 模型 [{m}] 失敗: {repr(e)}")
+            print(f"⚠️ 嘗試模型 [{m}] 失敗:", repr(e))
             continue
 
     if not reply_text:
