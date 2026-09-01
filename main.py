@@ -31,7 +31,7 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (未命中問題自動收集版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (智慧去重熱度榜版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -80,7 +80,7 @@ def get_dynamic_knowledge_base():
         return CACHED_KB if CACHED_KB else "營業時間：週二至週五 18:00 - 01:00，週六至週日 17:30 - 01:00（週一公休）。"
 
 def log_unanswered_question(question_text: str):
-    """自動在 Google 試算表中建立並寫入【待補充問題】分頁"""
+    """智慧去重 ＋ 熱度計數器功能"""
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
@@ -88,12 +88,36 @@ def log_unanswered_question(question_text: str):
         try:
             ws = sh.worksheet("待補充問題")
         except Exception:
-            ws = sh.add_worksheet(title="待補充問題", rows="100", cols="4")
-            ws.append_row(["發生時間", "顧客未命中問題", "狀態", "老闆補充答案"])
+            ws = sh.add_worksheet(title="待補充問題", rows="100", cols="5")
+            ws.append_row(["最後詢問時間", "顧客未命中問題", "被詢問次數", "狀態", "老闆補充答案"])
             
         now_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-        ws.append_row([now_str, question_text, "待補充", ""])
-        print(f"📝 成功記錄未命中問題到試算表: {question_text}")
+        records = ws.get_all_records()
+        
+        # 🔍 搜尋是否有類似問題
+        found_row_idx = None
+        current_count = 1
+        
+        for idx, row in enumerate(records, start=2):
+            existing_q = str(row.get("顧客未命中問題", ""))
+            # 若包含核心關鍵字（例如都有「寵物」或長相類似）
+            if question_text in existing_q or existing_q in question_text or ("寵物" in question_text and "寵物" in existing_q):
+                found_row_idx = idx
+                try:
+                    current_count = int(row.get("被詢問次數", 1)) + 1
+                except ValueError:
+                    current_count = 2
+                break
+                
+        if found_row_idx:
+            # ⚡ 找到了！更新最後詢問時間與計數器
+            ws.update_cell(found_row_idx, 1, now_str)
+            ws.update_cell(found_row_idx, 3, current_count)
+            print(f"🔥 成功為重複問題 [{question_text}] 增加熱度計數至: {current_count} 次！")
+        else:
+            # 🆕 沒找到，新增新的一行
+            ws.append_row([now_str, question_text, 1, "待補充", ""])
+            print(f"📝 成功記錄全新未命中問題: {question_text}")
     except Exception as e:
         print("❌ 自動記錄未命中問題失敗:", repr(e))
 
@@ -109,68 +133,3 @@ async def callback(request: Request, x_line_signature: str = Header(None)):
 @line_handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_msg = event.message.text
-    
-    live_kb = get_dynamic_knowledge_base()
-    
-    system_prompt = f"""
-    你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：
-
-    【最新店家知識庫】
-    {live_kb}
-
-    重要規定：若用戶詢問的問題在知識庫中完全找不到，請包含標籤 [UNANSWERED]，並委婉告知會轉由店長親自確認。
-    """
-    
-    # 🎯 鎖定 Groq 3 大精準對話模型
-    top_models = [
-        "qwen/qwen3.8-27b",
-        "openai/gpt-oss-120b",
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant"
-    ]
-
-    reply_text = None
-    for m in top_models:
-        try:
-            response = client.chat.completions.create(
-                model=m,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg}
-                ],
-                max_tokens=300,
-                temperature=0.7
-            )
-            reply_text = response.choices[0].message.content
-            print(f"✅ 成功使用 Groq 模型 [{m}] 生成回答！")
-            break
-        except Exception as e:
-            print(f"⚠️ 嘗試模型 [{m}] 失敗:", repr(e))
-            continue
-
-    if reply_text:
-        if "<think>" in reply_text and "</think>" in reply_text:
-            reply_text = re.sub(r'<think>.*?</think>', '', reply_text, flags=re.DOTALL).strip()
-        elif "</think>" in reply_text:
-            reply_text = reply_text.split("</think>")[-1].strip()
-
-        if "[UNANSWERED]" in reply_text or "轉由店長" in reply_text or "未提及" in reply_text:
-            reply_text = reply_text.replace("[UNANSWERED]", "").strip()
-            log_unanswered_question(user_msg)
-
-    if not reply_text:
-        reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
-
-    if reply_text:
-        with ApiClient(line_config) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
-                )
-            )
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
