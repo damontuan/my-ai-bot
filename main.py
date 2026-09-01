@@ -32,7 +32,7 @@ CACHE_DURATION = 0
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (菜單圖片強效版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (100%圖片盲抓版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -69,18 +69,25 @@ def get_dynamic_knowledge_base():
             q = str(r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")).strip()
             a = str(r.get("回答", "") or r.get("內容/回答", "") or r.get("內容", "")).strip()
             note = r.get("備註", "")
-            img_url = str(r.get("圖片網址", "") or r.get("圖片", "")).strip()
             
-            if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.endswith((".jpg", ".png", ".jpeg", ".webp"))):
+            # 🔍 深度盲抓：掃描這一列的所有欄位，尋找任何包含 http 的圖片網址
+            img_url = ""
+            for key, val in r.items():
+                val_str = str(val).strip()
+                if val_str.startswith("http") and ("i.ibb.co" in val_str or "imgur" in val_str or val_str.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
+                    img_url = val_str
+                    break
+            
+            if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
                 img_url = a
-                a = "這是我們最新的菜單海報，請參考以下圖片！"
+                a = "這是我們最新的菜單海報，請您參考！"
             
             if q and a:
                 prefix = f"【{cat}】" if cat else ""
                 suffix = f"（備註：{note}）" if note else ""
                 faq_list.append(f"{prefix}{q}：{a} {suffix}")
                 
-                if img_url and img_url.startswith("http"):
+                if img_url:
                     image_map[q] = img_url
 
         # 2. 讀取第二分頁「待補充問題」
@@ -98,6 +105,7 @@ def get_dynamic_knowledge_base():
         CACHED_KB = "\n".join(faq_list)
         CACHED_IMAGE_MAP = image_map
         LAST_FETCH_TIME = current_time
+        print("📸 成功載入圖片映射對照表:", image_map)
         return CACHED_KB, CACHED_IMAGE_MAP
     except Exception as e:
         print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
@@ -202,7 +210,6 @@ def handle_message(event):
             reply_text = reply_text.split("<think>")[0].strip()
 
         if "[UNANSWERED]" in reply_text or "轉由店長" in reply_text or "未提及" in reply_text:
-            # 只有當用戶完全不是在問菜單或照片時，才觸發未命中紀錄
             if not ("菜單" in user_msg or "照片" in user_msg or "圖片" in user_msg):
                 reply_text = reply_text.replace("[UNANSWERED]", "").strip()
                 log_unanswered_question(user_msg)
@@ -210,12 +217,16 @@ def handle_message(event):
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
-    # 📸 智慧匹配圖片發送
+    # 📸 強效匹配圖片網址
     matched_img_url = None
-    for q_key, img_link in image_map.items():
-        if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and ("菜單" in q_key or "菜單圖片" in q_key)):
-            matched_img_url = img_link
-            break
+    if image_map:
+        for q_key, img_link in image_map.items():
+            if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and ("菜單" in q_key or "菜單圖片" in q_key)):
+                matched_img_url = img_link
+                break
+        # 若沒精確比對到，只要用戶發問包含「菜單」，直接預設使用第一個找到的圖片網址！
+        if not matched_img_url and "菜單" in user_msg:
+            matched_img_url = list(image_map.values())[0]
 
     if reply_text:
         with ApiClient(line_config) as api_client:
