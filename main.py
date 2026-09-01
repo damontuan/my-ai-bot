@@ -31,7 +31,7 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (自動收集未解答問題版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (未命中問題自動收集版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -85,7 +85,6 @@ def log_unanswered_question(question_text: str):
         gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
         
-        # 尋找或建立「待補充問題」分頁
         try:
             ws = sh.worksheet("待補充問題")
         except Exception:
@@ -122,13 +121,16 @@ def handle_message(event):
     重要規定：若用戶詢問的問題在知識庫中完全找不到，請包含標籤 [UNANSWERED]，並委婉告知會轉由店長親自確認。
     """
     
-    try:
-        all_models = [m.id for m in client.models.list().data if "whisper" not in m.id]
-    except Exception:
-        all_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    # 🎯 鎖定 Groq 3 大精準對話模型
+    top_models = [
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant"
+    ]
 
     reply_text = None
-    for m in all_models:
+    for m in top_models:
         try:
             response = client.chat.completions.create(
                 model=m,
@@ -147,13 +149,11 @@ def handle_message(event):
             continue
 
     if reply_text:
-        # 過濾思考過程標籤
         if "<think>" in reply_text and "</think>" in reply_text:
             reply_text = re.sub(r'<think>.*?</think>', '', reply_text, flags=re.DOTALL).strip()
         elif "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
 
-        # 🎯 自動偵測：若未找到答案，自動觸發背景記錄寫入 Google 試算表！
         if "[UNANSWERED]" in reply_text or "轉由店長" in reply_text or "未提及" in reply_text:
             reply_text = reply_text.replace("[UNANSWERED]", "").strip()
             log_unanswered_question(user_msg)
