@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 import datetime
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -26,11 +27,11 @@ line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 CACHED_KB = ""
 LAST_FETCH_TIME = 0
-CACHE_DURATION = 300
+CACHE_DURATION = 60  # 🔥 縮短為 60 秒（1分鐘），老闆改完答案 1 分鐘內即時生效！
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (去重熱度榜版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (雙頁面連動版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -49,6 +50,9 @@ def get_dynamic_knowledge_base():
         gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
         
+        faq_list = []
+        
+        # 1. 讀取主頁面「常見問答 (QA)」
         try:
             worksheet = sh.worksheet("常見問答 (QA)")
         except Exception:
@@ -58,8 +62,6 @@ def get_dynamic_knowledge_base():
                 worksheet = sh.get_worksheet(0)
                 
         records = worksheet.get_all_records()
-        
-        faq_list = []
         for r in records:
             cat = r.get("分類", "")
             q = r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")
@@ -70,6 +72,18 @@ def get_dynamic_knowledge_base():
                 prefix = f"【{cat}】" if cat else ""
                 suffix = f"（備註：{note}）" if note else ""
                 faq_list.append(f"{prefix}{q}：{a} {suffix}")
+
+        # 2. ⚡ 自動讀取第二分頁「待補充問題」中老闆填寫的答案！
+        try:
+            supp_sheet = sh.worksheet("待補充問題")
+            supp_records = supp_sheet.get_all_records()
+            for r in supp_records:
+                q = str(r.get("顧客未命中問題", "")).strip()
+                a = str(r.get("老闆補充答案", "")).strip()
+                if q and a:
+                    faq_list.append(f"【補充解答】{q}：{a}")
+        except Exception as e:
+            print("無待補充問題頁面或讀取跳過:", e)
         
         CACHED_KB = "\n".join(faq_list)
         LAST_FETCH_TIME = current_time
@@ -79,7 +93,7 @@ def get_dynamic_knowledge_base():
         return CACHED_KB if CACHED_KB else "營業時間：週二至週五 18:00 - 01:00，週六至週日 17:30 - 01:00（週一公休）。"
 
 def log_unanswered_question(question_text: str):
-    """智慧去重 ＋ 熱度計數器功能"""
+    """精確累加次數計數器功能"""
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
@@ -94,15 +108,17 @@ def log_unanswered_question(question_text: str):
         records = ws.get_all_records()
         
         found_row_idx = None
-        current_count = 1
+        current_count = 2
         
         for idx, row in enumerate(records, start=2):
             existing_q = str(row.get("顧客未命中問題", ""))
             if question_text in existing_q or existing_q in question_text or ("寵物" in question_text and "寵物" in existing_q):
                 found_row_idx = idx
-                try:
-                    current_count = int(row.get("被詢問次數", 1)) + 1
-                except ValueError:
+                raw_count = str(row.get("被詢問次數", ""))
+                digits = re.findall(r'\d+', raw_count)
+                if digits:
+                    current_count = int(digits[0]) + 1
+                else:
                     current_count = 2
                 break
                 
@@ -167,7 +183,6 @@ def handle_message(event):
             continue
 
     if reply_text:
-        # ✂️ 超級安全極速清理 <think>...</think> 標籤
         if "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
         if "<think>" in reply_text:
