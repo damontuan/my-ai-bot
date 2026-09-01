@@ -138,9 +138,4 @@ def log_unanswered_question(question_text: str):
             ws.update_cell(found_row_idx, 3, current_count)
             print(f"🔥 成功為重複問題 [{question_text}] 增加熱度計數至: {current_count} 次！")
         else:
-            ws.append_row([now_str, question_text, 1, "待補充", ""])
-            print(f"📝 成功記錄全新未命中問題: {question_text}")
-    except Exception as e:
-        print("❌ 自動記錄未命中問題失敗:", repr(e))
-
-@
+            ws.append_row(
