@@ -28,7 +28,7 @@ line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 CACHED_KB = ""
 CACHED_IMAGE_MAP = {}
 LAST_FETCH_TIME = 0
-CACHE_DURATION = 0  # ⚡ 0 秒即時模式：每次顧客發問都讀取最新試算表改動！
+CACHE_DURATION = 0
 
 @app.get("/")
 def home():
@@ -71,7 +71,6 @@ def get_dynamic_knowledge_base():
             note = r.get("備註", "")
             img_url = str(r.get("圖片網址", "") or r.get("圖片", "")).strip()
             
-            # 💡 智慧辨識：若「回答」本身就是 http 圖片網址
             if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.endswith((".jpg", ".png", ".jpeg", ".webp"))):
                 img_url = a
                 a = "這是我們最新的菜單/照片，請您參考！"
@@ -89,4 +88,59 @@ def get_dynamic_knowledge_base():
             supp_sheet = sh.worksheet("待補充問題")
             supp_records = supp_sheet.get_all_records()
             for r in supp_records:
-                q = str(r.get("顧客未命中
+                q = str(r.get("顧客未命中問題", "")).strip()
+                a = str(r.get("老闆補充答案", "")).strip()
+                if q and a:
+                    faq_list.append(f"【補充解答】{q}：{a}")
+        except Exception as e:
+            print("無待補充問題頁面或讀取跳過:", e)
+        
+        CACHED_KB = "\n".join(faq_list)
+        CACHED_IMAGE_MAP = image_map
+        LAST_FETCH_TIME = current_time
+        return CACHED_KB, CACHED_IMAGE_MAP
+    except Exception as e:
+        print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
+        return CACHED_KB if CACHED_KB else ("營業時間：18:00 - 01:00", {})
+
+def log_unanswered_question(question_text: str):
+    """智慧去重 ＋ 熱度計數器功能"""
+    try:
+        gc = get_gspread_client()
+        sh = gc.open_by_key(SPREADSHEET_KEY)
+        
+        try:
+            ws = sh.worksheet("待補充問題")
+        except Exception:
+            ws = sh.add_worksheet(title="待補充問題", rows="100", cols="5")
+            ws.append_row(["最後詢問時間", "顧客未命中問題", "被詢問次數", "狀態", "老闆補充答案"])
+            
+        now_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+        records = ws.get_all_records()
+        
+        found_row_idx = None
+        current_count = 2
+        
+        for idx, row in enumerate(records, start=2):
+            existing_q = str(row.get("顧客未命中問題", ""))
+            if question_text in existing_q or existing_q in question_text or ("寵物" in question_text and "寵物" in existing_q):
+                found_row_idx = idx
+                raw_count = str(row.get("被詢問次數", ""))
+                digits = re.findall(r'\d+', raw_count)
+                if digits:
+                    current_count = int(digits[0]) + 1
+                else:
+                    current_count = 2
+                break
+                
+        if found_row_idx:
+            ws.update_cell(found_row_idx, 1, now_str)
+            ws.update_cell(found_row_idx, 3, current_count)
+            print(f"🔥 成功為重複問題 [{question_text}] 增加熱度計數至: {current_count} 次！")
+        else:
+            ws.append_row([now_str, question_text, 1, "待補充", ""])
+            print(f"📝 成功記錄全新未命中問題: {question_text}")
+    except Exception as e:
+        print("❌ 自動記錄未命中問題失敗:", repr(e))
+
+@
