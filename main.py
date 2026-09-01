@@ -30,9 +30,10 @@ CACHED_IMAGE_MAP = {}
 LAST_FETCH_TIME = 0
 CACHE_DURATION = 0
 
-@app.get("/")
+# ⚡ 支援 GET 與 HEAD 請求，徹底修復 405 錯誤，讓 Render 保持 24 小時 100% 永久喚醒！
+@app.api_route("/", methods=["GET", "HEAD"])
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (萬用題圖自動綁定版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (24H永久喚醒版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -72,7 +73,7 @@ def get_dynamic_knowledge_base():
                 a = str(row[1]).strip()
                 note = str(row[3]).strip() if len(row) > 3 else ""
                 
-                # 🔍 萬用盲抓：只要這一行的任何格子包含 http 圖片網址，就自動與問題 Q 綁定！
+                # 🔍 地毯式盲抓圖片網址
                 img_url = ""
                 for cell in row:
                     cell_str = str(cell).strip()
@@ -82,7 +83,7 @@ def get_dynamic_knowledge_base():
                 
                 if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
                     img_url = a
-                    a = "這是我們最新的相關照片/資訊，請您參考！"
+                    a = "這是我們最新的菜單海報，請您參考！"
                 
                 if q and a:
                     suffix = f"（備註：{note}）" if note else ""
@@ -222,12 +223,10 @@ def handle_message(event):
     matched_img_url = None
     if image_map:
         for q_key, img_link in image_map.items():
-            # 只要問題關鍵字彼此重疊匹配
             clean_q = q_key.replace("請問", "").replace("圖片", "").replace("嗎", "").replace("？", "").strip()
             if clean_q and (clean_q in user_msg or user_msg in clean_q):
                 matched_img_url = img_link
                 break
-        # 若顧客直接問「菜單」
         if not matched_img_url and "菜單" in user_msg:
             matched_img_url = list(image_map.values())[0]
 
