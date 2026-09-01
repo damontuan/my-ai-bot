@@ -28,11 +28,11 @@ line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 CACHED_KB = ""
 CACHED_IMAGE_MAP = {}
 LAST_FETCH_TIME = 0
-CACHE_DURATION = 60  # 60 秒快取，即時更新
+CACHE_DURATION = 30  # 🔥 縮短為 30 秒快取，讓測試更迅速！
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (圖文雙發高階版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (圖片智慧直發版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -66,19 +66,23 @@ def get_dynamic_knowledge_base():
         records = worksheet.get_all_records()
         for r in records:
             cat = r.get("分類", "")
-            q = r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")
-            a = r.get("回答", "") or r.get("內容/回答", "") or r.get("內容", "")
+            q = str(r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")).strip()
+            a = str(r.get("回答", "") or r.get("內容/回答", "") or r.get("內容", "")).strip()
             note = r.get("備註", "")
-            img_url = r.get("圖片網址", "") or r.get("圖片", "")
+            img_url = str(r.get("圖片網址", "") or r.get("圖片", "")).strip()
+            
+            # 💡 智慧辨識：若「回答」本身就是 http 圖片網址
+            if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.endswith((".jpg", ".png", ".jpeg", ".webp"))):
+                img_url = a
+                a = "這是我們最新的菜單/照片，請您參考！"
             
             if q and a:
                 prefix = f"【{cat}】" if cat else ""
                 suffix = f"（備註：{note}）" if note else ""
                 faq_list.append(f"{prefix}{q}：{a} {suffix}")
                 
-                # 若有設定圖片網址，記錄到圖片映射表中
-                if img_url and str(img_url).startswith("http"):
-                    image_map[str(q).strip()] = str(img_url).strip()
+                if img_url and img_url.startswith("http"):
+                    image_map[q] = img_url
 
         # 2. 讀取第二分頁「待補充問題」
         try:
@@ -203,10 +207,10 @@ def handle_message(event):
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
-    # 📸 判斷是否需要附帶傳送圖片
+    # 📸 智慧匹配圖片網址
     matched_img_url = None
     for q_key, img_link in image_map.items():
-        if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and "菜單" in q_key):
+        if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and ("菜單" in q_key or "菜單圖片" in q_key)):
             matched_img_url = img_link
             break
 
@@ -216,7 +220,6 @@ def handle_message(event):
             
             messages_to_send = [TextMessage(text=reply_text)]
             
-            # 若找到匹配圖片，自動追加傳送圖片訊息！
             if matched_img_url:
                 messages_to_send.append(
                     ImageMessage(
