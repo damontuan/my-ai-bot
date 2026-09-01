@@ -2,6 +2,7 @@ import os
 import json
 import time
 import re
+import datetime
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
 from groq import Groq
@@ -30,7 +31,13 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (Groq 極速過濾版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (自動收集未解答問題版) 運行中！"}
+
+def get_gspread_client():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
 def get_dynamic_knowledge_base():
     global CACHED_KB, LAST_FETCH_TIME
@@ -40,11 +47,7 @@ def get_dynamic_knowledge_base():
         return CACHED_KB
         
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        gc = gspread.authorize(creds)
-        
+        gc = get_gspread_client()
         sh = gc.open_by_key(SPREADSHEET_KEY)
         
         try:
@@ -76,6 +79,25 @@ def get_dynamic_knowledge_base():
         print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
         return CACHED_KB if CACHED_KB else "營業時間：週二至週五 18:00 - 01:00，週六至週日 17:30 - 01:00（週一公休）。"
 
+def log_unanswered_question(question_text: str):
+    """自動在 Google 試算表中建立並寫入【待補充問題】分頁"""
+    try:
+        gc = get_gspread_client()
+        sh = gc.open_by_key(SPREADSHEET_KEY)
+        
+        # 尋找或建立「待補充問題」分頁
+        try:
+            ws = sh.worksheet("待補充問題")
+        except Exception:
+            ws = sh.add_worksheet(title="待補充問題", rows="100", cols="4")
+            ws.append_row(["發生時間", "顧客未命中問題", "狀態", "老闆補充答案"])
+            
+        now_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([now_str, question_text, "待補充", ""])
+        print(f"📝 成功記錄未命中問題到試算表: {question_text}")
+    except Exception as e:
+        print("❌ 自動記錄未命中問題失敗:", repr(e))
+
 @app.post("/callback")
 async def callback(request: Request, x_line_signature: str = Header(None)):
     body = (await request.body()).decode("utf-8")
@@ -91,7 +113,14 @@ def handle_message(event):
     
     live_kb = get_dynamic_knowledge_base()
     
-    system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶。請直接給出回答，不要輸出任何思考過程：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
+    system_prompt = f"""
+    你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：
+
+    【最新店家知識庫】
+    {live_kb}
+
+    重要規定：若用戶詢問的問題在知識庫中完全找不到，請包含標籤 [UNANSWERED]，並委婉告知會轉由店長親自確認。
+    """
     
     try:
         all_models = [m.id for m in client.models.list().data if "whisper" not in m.id]
@@ -118,11 +147,16 @@ def handle_message(event):
             continue
 
     if reply_text:
-        # ✂️ 完美過濾：強效移除所有 <think>...</think> 思考過程標籤
+        # 過濾思考過程標籤
         if "<think>" in reply_text and "</think>" in reply_text:
             reply_text = re.sub(r'<think>.*?</think>', '', reply_text, flags=re.DOTALL).strip()
         elif "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
+
+        # 🎯 自動偵測：若未找到答案，自動觸發背景記錄寫入 Google 試算表！
+        if "[UNANSWERED]" in reply_text or "轉由店長" in reply_text or "未提及" in reply_text:
+            reply_text = reply_text.replace("[UNANSWERED]", "").strip()
+            log_unanswered_question(user_msg)
 
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
