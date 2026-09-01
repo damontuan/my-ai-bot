@@ -15,19 +15,16 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = FastAPI()
 
-# 1. 讀取環境變數
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-# 2. 初始化核心用戶端
 client = Groq(api_key=GROQ_API_KEY)
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 line_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 3. 快取變數控制（0秒即時模式）
 CACHED_KB = ""
 CACHED_IMAGE_MAP = {}
 LAST_FETCH_TIME = 0
@@ -35,7 +32,7 @@ CACHE_DURATION = 0
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (工業級無瑕版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (菜單圖片強效版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -57,7 +54,7 @@ def get_dynamic_knowledge_base():
         faq_list = []
         image_map = {}
         
-        # 讀取主分頁「常見問答 (QA)」
+        # 1. 讀取主頁面「常見問答 (QA)」
         try:
             worksheet = sh.worksheet("常見問答 (QA)")
         except Exception:
@@ -74,10 +71,9 @@ def get_dynamic_knowledge_base():
             note = r.get("備註", "")
             img_url = str(r.get("圖片網址", "") or r.get("圖片", "")).strip()
             
-            # 智慧相容：若回答為圖片網址，自動轉為圖文雙發模式
             if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.endswith((".jpg", ".png", ".jpeg", ".webp"))):
                 img_url = a
-                a = "這是我們最新的菜單/照片，請您參考！"
+                a = "這是我們最新的菜單海報，請參考以下圖片！"
             
             if q and a:
                 prefix = f"【{cat}】" if cat else ""
@@ -87,7 +83,7 @@ def get_dynamic_knowledge_base():
                 if img_url and img_url.startswith("http"):
                     image_map[q] = img_url
 
-        # 自動連動第二分頁「待補充問題」
+        # 2. 讀取第二分頁「待補充問題」
         try:
             supp_sheet = sh.worksheet("待補充問題")
             supp_records = supp_sheet.get_all_records()
@@ -168,7 +164,9 @@ def handle_message(event):
     【最新店家知識庫】
     {live_kb}
 
-    重要規定：若用戶詢問的問題在知識庫中完全找不到，請包含標籤 [UNANSWERED]，並委婉告知會轉由店長親自確認。
+    特殊規則：
+    1. 若用戶詢問菜單、價目表或照片，且知識庫中有【菜單】或【圖片】相關資料，請直接熱情回覆「這是我們最新的菜單/照片，請您參考下方圖片！」，絕對不可回答不知道或轉交店長！
+    2. 若用戶詢問的問題在知識庫中完全找不到，請包含標籤 [UNANSWERED]，並委婉告知會轉由店長親自確認。
     """
     
     top_models = [
@@ -198,20 +196,21 @@ def handle_message(event):
             continue
 
     if reply_text:
-        # 安全清洗思考標籤
         if "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
         if "<think>" in reply_text:
             reply_text = reply_text.split("<think>")[0].strip()
 
         if "[UNANSWERED]" in reply_text or "轉由店長" in reply_text or "未提及" in reply_text:
-            reply_text = reply_text.replace("[UNANSWERED]", "").strip()
-            log_unanswered_question(user_msg)
+            # 只有當用戶完全不是在問菜單或照片時，才觸發未命中紀錄
+            if not ("菜單" in user_msg or "照片" in user_msg or "圖片" in user_msg):
+                reply_text = reply_text.replace("[UNANSWERED]", "").strip()
+                log_unanswered_question(user_msg)
 
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
-    # 智慧匹配圖片發送
+    # 📸 智慧匹配圖片發送
     matched_img_url = None
     for q_key, img_link in image_map.items():
         if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and ("菜單" in q_key or "菜單圖片" in q_key)):
