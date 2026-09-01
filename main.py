@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
 from groq import Groq
@@ -29,7 +30,7 @@ CACHE_DURATION = 300
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (Groq 動態模型版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (Groq 極速過濾版) 運行中！"}
 
 def get_dynamic_knowledge_base():
     global CACHED_KB, LAST_FETCH_TIME
@@ -90,14 +91,11 @@ def handle_message(event):
     
     live_kb = get_dynamic_knowledge_base()
     
-    system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
+    system_prompt = f"你是極上居酒屋的專屬 AI 智慧客服店長。請根據以下最新店家知識庫資料，用熱情、親切、條理清晰且精練（150字以內）的口氣回應用戶。請直接給出回答，不要輸出任何思考過程：\n\n【最新店家知識庫】\n{live_kb}\n\n若用戶詢問的問題不在知識庫中，請委婉告知會轉由店長親自確認。"
     
-    # ⚡ 動態獲取當前 Groq 可用的所有最新模型
     try:
         all_models = [m.id for m in client.models.list().data if "whisper" not in m.id]
-        print("🤖 Groq 當前可用模型列表:", all_models)
-    except Exception as e:
-        print("⚠️ 無法獲取模型列表:", repr(e))
+    except Exception:
         all_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
     reply_text = None
@@ -118,6 +116,13 @@ def handle_message(event):
         except Exception as e:
             print(f"⚠️ 嘗試模型 [{m}] 失敗:", repr(e))
             continue
+
+    if reply_text:
+        # ✂️ 完美過濾：強效移除所有 <think>...</think> 思考過程標籤
+        if "<think>" in reply_text and "</think>" in reply_text:
+            reply_text = re.sub(r'<think>.*?</think>', '', reply_text, flags=re.DOTALL).strip()
+        elif "</think>" in reply_text:
+            reply_text = reply_text.split("</think>")[-1].strip()
 
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
