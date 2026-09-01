@@ -32,7 +32,7 @@ CACHE_DURATION = 0
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (100%圖片盲抓版) 運行中！"}
+    return {"status": "online", "message": "NOVA.AI 智慧客服系統 (萬用題圖自動綁定版) 運行中！"}
 
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -63,49 +63,51 @@ def get_dynamic_knowledge_base():
             except Exception:
                 worksheet = sh.get_worksheet(0)
                 
-        records = worksheet.get_all_records()
-        for r in records:
-            cat = r.get("分類", "")
-            q = str(r.get("問題", "") or r.get("項目/問題", "") or r.get("項目", "")).strip()
-            a = str(r.get("回答", "") or r.get("內容/回答", "") or r.get("內容", "")).strip()
-            note = r.get("備註", "")
-            
-            # 🔍 深度盲抓：掃描這一列的所有欄位，尋找任何包含 http 的圖片網址
-            img_url = ""
-            for key, val in r.items():
-                val_str = str(val).strip()
-                if val_str.startswith("http") and ("i.ibb.co" in val_str or "imgur" in val_str or val_str.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
-                    img_url = val_str
-                    break
-            
-            if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
-                img_url = a
-                a = "這是我們最新的菜單海報，請您參考！"
-            
-            if q and a:
-                prefix = f"【{cat}】" if cat else ""
-                suffix = f"（備註：{note}）" if note else ""
-                faq_list.append(f"{prefix}{q}：{a} {suffix}")
+        all_values = worksheet.get_all_values()
+        if len(all_values) > 1:
+            for row in all_values[1:]:
+                if not row or len(row) < 2:
+                    continue
+                q = str(row[0]).strip()
+                a = str(row[1]).strip()
+                note = str(row[3]).strip() if len(row) > 3 else ""
                 
-                if img_url:
-                    image_map[q] = img_url
+                # 🔍 萬用盲抓：只要這一行的任何格子包含 http 圖片網址，就自動與問題 Q 綁定！
+                img_url = ""
+                for cell in row:
+                    cell_str = str(cell).strip()
+                    if cell_str.startswith("http") and ("i.ibb.co" in cell_str or "imgur" in cell_str or cell_str.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
+                        img_url = cell_str
+                        break
+                
+                if a.startswith("http") and ("i.ibb.co" in a or "imgur" in a or a.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))):
+                    img_url = a
+                    a = "這是我們最新的相關照片/資訊，請您參考！"
+                
+                if q and a:
+                    suffix = f"（備註：{note}）" if note else ""
+                    faq_list.append(f"{q}：{a} {suffix}")
+                    if img_url:
+                        image_map[q] = img_url
 
         # 2. 讀取第二分頁「待補充問題」
         try:
             supp_sheet = sh.worksheet("待補充問題")
-            supp_records = supp_sheet.get_all_records()
-            for r in supp_records:
-                q = str(r.get("顧客未命中問題", "")).strip()
-                a = str(r.get("老闆補充答案", "")).strip()
-                if q and a:
-                    faq_list.append(f"【補充解答】{q}：{a}")
+            supp_values = supp_sheet.get_all_values()
+            if len(supp_values) > 1:
+                for row in supp_values[1:]:
+                    if len(row) >= 4:
+                        q = str(row[1]).strip()
+                        a = str(row[3]).strip()
+                        if q and a:
+                            faq_list.append(f"【補充解答】{q}：{a}")
         except Exception as e:
             print("無待補充問題頁面或讀取跳過:", e)
         
         CACHED_KB = "\n".join(faq_list)
         CACHED_IMAGE_MAP = image_map
         LAST_FETCH_TIME = current_time
-        print("📸 成功載入圖片映射對照表:", image_map)
+        print("📸 成功載入萬用題目圖片對照表:", image_map)
         return CACHED_KB, CACHED_IMAGE_MAP
     except Exception as e:
         print("❌ 讀取 Google Sheet 失敗詳情:", repr(e))
@@ -173,7 +175,7 @@ def handle_message(event):
     {live_kb}
 
     特殊規則：
-    1. 若用戶詢問菜單、價目表或照片，且知識庫中有【菜單】或【圖片】相關資料，請直接熱情回覆「這是我們最新的菜單/照片，請您參考下方圖片！」，絕對不可回答不知道或轉交店長！
+    1. 若用戶詢問的問題在知識庫中有答案，且該問題附有圖片資料，請直接熱情回答並提示「請參考下方圖片！」。
     2. 若用戶詢問的問題在知識庫中完全找不到，請包含標籤 [UNANSWERED]，並委婉告知會轉由店長親自確認。
     """
     
@@ -210,21 +212,22 @@ def handle_message(event):
             reply_text = reply_text.split("<think>")[0].strip()
 
         if "[UNANSWERED]" in reply_text or "轉由店長" in reply_text or "未提及" in reply_text:
-            if not ("菜單" in user_msg or "照片" in user_msg or "圖片" in user_msg):
-                reply_text = reply_text.replace("[UNANSWERED]", "").strip()
-                log_unanswered_question(user_msg)
+            reply_text = reply_text.replace("[UNANSWERED]", "").strip()
+            log_unanswered_question(user_msg)
 
     if not reply_text:
         reply_text = "店長目前正在忙碌中，請稍後再試或致電給我們！"
 
-    # 📸 強效匹配圖片網址
+    # 📸 萬用題圖自動匹配發送
     matched_img_url = None
     if image_map:
         for q_key, img_link in image_map.items():
-            if q_key in user_msg or user_msg in q_key or ("菜單" in user_msg and ("菜單" in q_key or "菜單圖片" in q_key)):
+            # 只要問題關鍵字彼此重疊匹配
+            clean_q = q_key.replace("請問", "").replace("圖片", "").replace("嗎", "").replace("？", "").strip()
+            if clean_q and (clean_q in user_msg or user_msg in clean_q):
                 matched_img_url = img_link
                 break
-        # 若沒精確比對到，只要用戶發問包含「菜單」，直接預設使用第一個找到的圖片網址！
+        # 若顧客直接問「菜單」
         if not matched_img_url and "菜單" in user_msg:
             matched_img_url = list(image_map.values())[0]
 
@@ -241,7 +244,7 @@ def handle_message(event):
                         preview_image_url=matched_img_url
                     )
                 )
-                print(f"🖼️ 自動追加發送圖片訊息: {matched_img_url}")
+                print(f"🖼️ 成功發送匹配圖片訊息: {matched_img_url}")
                 
             line_bot_api.reply_message(
                 ReplyMessageRequest(
