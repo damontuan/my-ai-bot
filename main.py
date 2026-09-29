@@ -31,6 +31,9 @@ _groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 _handlers = {}
 _kb_cache = {}
 _store_cache = {"at": 0, "stores": {}}
+_sessions = {}
+SESSION_TURNS = 8
+SESSION_SECONDS = 30 * 60
 
 MODELS = [
     "qwen/qwen3.8-27b",
@@ -303,28 +306,48 @@ def log_unanswered_question(spreadsheet_key, question_text):
         print("記錄未命中問題失敗:", repr(exc))
 
 
-def ask_model(store_name, knowledge, user_msg):
+def session_key(store, user_id):
+    return f"{store['spreadsheet_key']}:{user_id or 'unknown'}"
+
+
+def recent_turns(key):
+    now = time.time()
+    turns = [item for item in _sessions.get(key, []) if now - item["at"] < SESSION_SECONDS]
+    _sessions[key] = turns
+    return turns
+
+
+def remember_turn(key, role, content):
+    turns = recent_turns(key)
+    turns.append({"role": role, "content": content[:500], "at": time.time()})
+    _sessions[key] = turns[-SESSION_TURNS:]
+
+
+def ask_model(store_name, knowledge, user_msg, history):
     if _groq is None:
         return None
     system_prompt = f"""
-你是{store_name}的專屬 AI 客服。用知識庫裡已經寫的資料回答，語氣親切、精簡，150 字以內。不要編造知識庫裡沒有的價格、時間、地址或規定。
+你是{store_name}的 AI 智能店長。對客人要像值班店長：聽得懂同一段對話的前後文，會把知識庫裡的資料自己整理成回答。語氣親切、具體，150 字以內。
 
-【最新店家知識庫】
+【店家知識庫，含店長後來補充的答案】
 {knowledge}
 
-規則：
-1. 客人問店家介紹、店在哪、幾點開、推薦什麼時，把知識庫裡的店名、地址、營業時間、招牌商品整理成一段介紹。不需要知識庫裡剛好有一題叫「店家介紹」。
-2. 有相關圖片時，回答後補一句「請參考下方圖片」。
-3. 只有知識庫完全沒提到這件事時，回覆才包含 [UNANSWERED]，並請客人稍候，由店長確認。問法不同但資料已經有，不要用這個標籤。
+怎麼回答：
+1. 客人問介紹、位置、營業、推薦、怎麼來、怎麼預約時，用知識庫裡的店名、地址、時間、招牌、注意事項組合成完整介紹。題目文字不必一模一樣。
+2. 「這個、那個、剛剛那個」要接上一句在問什麼。對話紀錄看得到剛才的菜名、價格或服務。
+3. 有相關圖片時，回答後加一句「請參考下方圖片」。
+4. 價格、地址、時間、規定只能引用知識庫原文，不能猜想。
+5. 知識庫完全沒有這件事時，才在回覆加上 [UNANSWERED]，並請客人稍候。已經能回答一部分時，先回答知道的部分，不要加這個標籤。
+6. 標成「【補充解答】」的內容是店長確認過的，優先採用。
 """
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend({"role": item["role"], "content": item["content"]} for item in history)
+    messages.append({"role": "user", "content": user_msg})
     for model in MODELS:
         try:
             response = _groq.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg},
-                ],
+                messages=messages,
                 max_tokens=300,
                 temperature=0.4,
             )
@@ -349,16 +372,22 @@ def match_image(user_msg, image_map):
 
 def handle_message(event, store):
     user_msg = event.message.text
+    user_id = getattr(event.source, "user_id", None)
+    key = session_key(store, user_id)
+    history = [{"role": item["role"], "content": item["content"]} for item in recent_turns(key)]
     knowledge, image_map = get_dynamic_knowledge_base(store["spreadsheet_key"])
-    reply_text = ask_model(store["name"], knowledge, user_msg)
+    reply_text = ask_model(store["name"], knowledge, user_msg, history)
     if reply_text:
         if "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
-        if "[UNANSWERED]" in reply_text or "店長確認" in reply_text:
+        if "[UNANSWERED]" in reply_text:
             reply_text = reply_text.replace("[UNANSWERED]", "").strip()
             log_unanswered_question(store["spreadsheet_key"], user_msg)
     if not reply_text:
         reply_text = "店長目前正在確認，請稍後再問一次，或直接留訊息給我們。"
+        log_unanswered_question(store["spreadsheet_key"], user_msg)
+    remember_turn(key, "user", user_msg)
+    remember_turn(key, "assistant", reply_text)
     image_url = match_image(user_msg, image_map)
     messages = [TextMessage(text=reply_text)]
     if image_url:
