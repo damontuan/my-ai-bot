@@ -220,6 +220,26 @@ def get_dynamic_knowledge_base(spreadsheet_key):
 
         faq_list = []
         image_map = {}
+        try:
+            info_sheet = sh.worksheet("店家資訊")
+            info_values = info_sheet.get_all_values()
+            if len(info_values) > 1:
+                for row in info_values[1:]:
+                    label = str(row[0]).strip() if row else ""
+                    value = str(row[1]).strip() if len(row) > 1 else ""
+                    if label and value:
+                        faq_list.append(f"{label}：{value}")
+                        for cell in row:
+                            cell_text = str(cell).strip()
+                            if cell_text.startswith("http") and (
+                                "i.ibb.co" in cell_text
+                                or "imgur" in cell_text
+                                or cell_text.lower().endswith((".jpg", ".png", ".jpeg", ".webp"))
+                            ):
+                                image_map[label] = cell_text
+        except Exception as exc:
+            print("無店家資訊頁面或讀取跳過:", exc)
+
         all_values = worksheet.get_all_values()
         if len(all_values) > 1:
             for row in all_values[1:]:
