@@ -340,6 +340,7 @@ def ask_model(store_name, knowledge, user_msg, history):
 4. 價格、地址、時間、規定只能引用知識庫原文，不能猜想。
 5. 知識庫完全沒有這件事時，才在回覆加上 [UNANSWERED]，並請客人稍候。已經能回答一部分時，先回答知道的部分，不要加這個標籤。
 6. 標成「【補充解答】」的內容是店長確認過的，優先採用。
+7. 在句子裡自然放 1 到 2 個小表情，要對應該句在講的事。介紹或打招呼用 😊 或 ✨，地址用 📍，招牌食物用 😋，寵物用 🐶 或 🐱，道謝用 🙏。不要每則都用同一個，也不要一直堆在最後。
 """
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
