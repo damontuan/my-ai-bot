@@ -3,6 +3,7 @@ import json
 import time
 import re
 import datetime
+import random
 
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -18,7 +19,6 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
     ImageMessage,
-    StickerMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
@@ -359,15 +359,17 @@ def ask_model(store_name, knowledge, user_msg, history):
     return None
 
 
-def pick_sticker(user_msg):
+def pick_emoji(user_msg):
     text = user_msg.lower()
     if any(word in text for word in ("hi", "hello", "嗨", "你好", "哈囉", "在嗎", "介紹", "歡迎")):
-        return "11537", "52002734"
-    if any(word in text for word in ("謝謝", "感謝", "掰", "再見")):
-        return "11537", "52002735"
-    if any(word in text for word in ("價目", "價格", "菜單", "招牌")):
-        return "11537", "52002738"
-    return "11537", "52002736"
+        choices = ["😊", "🙂", "✨"]
+    elif any(word in text for word in ("謝謝", "感謝", "掰", "再見")):
+        choices = ["🙏", "😊", "💛"]
+    elif any(word in text for word in ("價目", "價格", "菜單", "招牌", "推薦")):
+        choices = ["😋", "👍", "✨"]
+    else:
+        choices = ["😊", "🙂", "👍"]
+    return random.choice(choices)
 
 
 def match_image(user_msg, image_map):
@@ -398,14 +400,12 @@ def handle_message(event, store):
     if not reply_text:
         reply_text = "店長目前正在確認，請稍後再問一次，或直接留訊息給我們。"
         log_unanswered_question(store["spreadsheet_key"], user_msg)
+    if not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", reply_text[-6:]):
+        reply_text = f"{reply_text} {pick_emoji(user_msg)}"
     remember_turn(key, "user", user_msg)
     remember_turn(key, "assistant", reply_text)
-    package_id, sticker_id = pick_sticker(user_msg)
     image_url = match_image(user_msg, image_map)
-    messages = [
-        StickerMessage(package_id=package_id, sticker_id=sticker_id),
-        TextMessage(text=reply_text),
-    ]
+    messages = [TextMessage(text=reply_text)]
     if image_url:
         messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
     config = Configuration(access_token=store["line_token"])
