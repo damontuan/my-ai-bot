@@ -190,8 +190,8 @@ def get_handler(store):
     store_id = store["id"]
 
     @handler.add(MessageEvent, message=TextMessageContent)
-    def on_message(event, bound_id=store_id):
-        current = legacy_store() if bound_id == "default" else load_registry().get(bound_id)
+    def on_message(event):
+        current = legacy_store() if store_id == "default" else load_registry().get(store_id)
         if current:
             handle_message(event, current)
 
