@@ -33,10 +33,10 @@ _kb_cache = {}
 _store_cache = {"at": 0, "stores": {}}
 
 MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
     "qwen/qwen3.8-27b",
+    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
+    "llama-3.1-8b-instant",
 ]
 
 
@@ -307,14 +307,15 @@ def ask_model(store_name, knowledge, user_msg):
     if _groq is None:
         return None
     system_prompt = f"""
-你是{store_name}的專屬 AI 客服。請只根據下面的店家知識庫回答，語氣親切、精簡，150 字以內。不要編造知識庫裡沒有的價格、時間、地址或規定。
+你是{store_name}的專屬 AI 客服。用知識庫裡已經寫的資料回答，語氣親切、精簡，150 字以內。不要編造知識庫裡沒有的價格、時間、地址或規定。
 
 【最新店家知識庫】
 {knowledge}
 
 規則：
-1. 知識庫有答案，而且該題附有圖片時，回答後補一句「請參考下方圖片」。
-2. 知識庫完全沒有這個問題時，回覆裡必須包含 [UNANSWERED]，並請客人稍候，由店長確認。
+1. 客人問店家介紹、店在哪、幾點開、推薦什麼時，把知識庫裡的店名、地址、營業時間、招牌商品整理成一段介紹。不需要知識庫裡剛好有一題叫「店家介紹」。
+2. 有相關圖片時，回答後補一句「請參考下方圖片」。
+3. 只有知識庫完全沒提到這件事時，回覆才包含 [UNANSWERED]，並請客人稍候，由店長確認。問法不同但資料已經有，不要用這個標籤。
 """
     for model in MODELS:
         try:
