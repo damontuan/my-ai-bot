@@ -428,7 +428,7 @@ def ask_model(store_name, knowledge, user_msg, history):
 3. 有相關圖片時，回答後加一句「請參考下方圖片」。
 4. 價格、地址、時間只能引用知識庫，不能猜想。
 5. 預約、訂金／定金、取消、改期、遲到、保留時間等規定：必須嚴格依照知識庫原文回覆，可稍作文句通順，但不得改寫含義、不得合併成另一套規則、不得省略手續費或證明文件等條件、不得自行發明「逾時不退」這類原句沒有的說法。
-6. 知識庫完全沒有這件事時，才在回覆加上 [UNANSWERED]，並請客人稍候。已經能回答一部分時，先回答知道的部分，不要加這個標籤。
+6. 知識庫沒有明確寫到的題目（含店家不做的服務、沒列出的項目）：可以依店名／既有範圍簡短回覆客人，但回覆裡務必加上 [UNANSWERED]，方便店長之後補進知識庫。只有知識庫裡已有對應問答時，才不要加這個標籤。
 7. 標成「【補充解答】」的內容是店長確認過的，優先採用。
 8. 在句子裡自然放 1 到 2 個小表情。不要每則都用同一個，也不要一直堆在最後。
 """
@@ -475,6 +475,44 @@ def match_image(user_msg, image_map):
     return None
 
 
+def faq_coverage_score(user_msg, faq_pairs):
+    if not faq_pairs:
+        return 0
+    best = 0
+    msg = user_msg.strip()
+    for question, _answer in faq_pairs:
+        score = 0
+        clean_q = (
+            question.replace("請問", "")
+            .replace("嗎", "")
+            .replace("？", "")
+            .replace("?", "")
+            .strip()
+        )
+        if clean_q and (clean_q in msg or msg in clean_q):
+            score += 10
+        for token in re.findall(r"[\u4e00-\u9fff]{2,}", clean_q):
+            if token in msg:
+                score += 2
+        if best < score:
+            best = score
+    return best
+
+
+def should_collect_miss(user_msg, faq_pairs, tagged_unanswered):
+    text = (user_msg or "").strip()
+    if len(text) < 2:
+        return False
+    low = text.lower()
+    skip = ("hi", "hello", "hey")
+    skip_zh = ("你好", "哈囉", "嗨", "在嗎", "謝謝", "感謝", "掰", "再見", "早安", "午安", "晚安")
+    if any(word in low for word in skip) or any(word in text for word in skip_zh):
+        return False
+    if tagged_unanswered:
+        return True
+    return faq_coverage_score(text, faq_pairs) < 6
+
+
 def handle_message(event, store):
     user_msg = event.message.text
     user_id = getattr(event.source, "user_id", None)
@@ -482,19 +520,27 @@ def handle_message(event, store):
     history = [{"role": item["role"], "content": item["content"]} for item in recent_turns(key)]
     knowledge, image_map, faq_pairs = get_dynamic_knowledge_base(store["spreadsheet_key"])
     reply_text = match_policy_faq(user_msg, faq_pairs)
+    used_policy = bool(reply_text)
     if reply_text:
         print("規定類問題改用知識庫原文回答")
     else:
         reply_text = ask_model(store["name"], knowledge, user_msg, history)
+    tagged_unanswered = False
     if reply_text:
         if "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
         if "[UNANSWERED]" in reply_text:
+            tagged_unanswered = True
             reply_text = reply_text.replace("[UNANSWERED]", "").strip()
-            log_unanswered_question(store["spreadsheet_key"], user_msg)
     if not reply_text:
         reply_text = "店長目前正在確認，請稍後再問一次，或直接留訊息給我們。"
+        tagged_unanswered = True
+    # 規定類已命中知識庫原文，不收錄；其餘知識庫對不到的問題要收錄
+    if used_policy:
+        pass
+    elif should_collect_miss(user_msg, faq_pairs, tagged_unanswered):
         log_unanswered_question(store["spreadsheet_key"], user_msg)
+        print("已收錄未命中問題:", user_msg[:80])
     if not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", reply_text[-6:]):
         reply_text = f"{reply_text} {pick_emoji(user_msg)}"
     remember_turn(key, "user", user_msg)
