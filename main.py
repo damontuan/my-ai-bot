@@ -203,10 +203,16 @@ def get_handler(store):
     return handler
 
 
+POLICY_MARKERS = (
+    "預約", "訂金", "定金", "取消", "改時間", "更改", "改期", "遲到",
+    "退定", "退訂", "保留", "三天", "四天", "逾時", "訂位",
+)
+
+
 def get_dynamic_knowledge_base(spreadsheet_key):
     cached = _kb_cache.get(spreadsheet_key)
     if cached and time.time() - cached["at"] < 30:
-        return cached["kb"], cached["images"]
+        return cached["kb"], cached["images"], cached.get("faqs", [])
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(spreadsheet_key)
@@ -219,6 +225,7 @@ def get_dynamic_knowledge_base(spreadsheet_key):
                 worksheet = sh.get_worksheet(0)
 
         faq_list = []
+        faq_pairs = []
         image_map = {}
         try:
             info_sheet = sh.worksheet("店家資訊")
@@ -268,6 +275,7 @@ def get_dynamic_knowledge_base(spreadsheet_key):
                 if question and answer:
                     suffix = f"（備註：{note}）" if note else ""
                     faq_list.append(f"{question}：{answer} {suffix}")
+                    faq_pairs.append((question, answer))
                     if image_url:
                         image_map[question] = image_url
 
@@ -284,19 +292,80 @@ def get_dynamic_knowledge_base(spreadsheet_key):
                             answer = maybe
                     if question and answer:
                         faq_list.append(f"【補充解答】{question}：{answer}")
+                        faq_pairs.append((question, answer))
         except Exception as exc:
             print("無待補充問題頁面或讀取跳過:", exc)
 
         kb = "\n".join(faq_list)
-        _kb_cache[spreadsheet_key] = {"at": time.time(), "kb": kb, "images": image_map}
+        _kb_cache[spreadsheet_key] = {
+            "at": time.time(),
+            "kb": kb,
+            "images": image_map,
+            "faqs": faq_pairs,
+        }
         print("已載入知識庫:", spreadsheet_key, "圖片數", len(image_map))
-        return kb, image_map
+        return kb, image_map, faq_pairs
     except Exception as exc:
         print("讀取 Google Sheet 失敗:", repr(exc))
         if cached:
-            return cached["kb"], cached["images"]
-        return "目前讀取不到店家資料，請稍後再問。", {}
+            return cached["kb"], cached["images"], cached.get("faqs", [])
+        return "目前讀取不到店家資料，請稍後再問。", {}, []
 
+
+def match_policy_faq(user_msg, faq_pairs):
+    """預約／訂金／取消等規定直接用知識庫原文，避免模型改寫。"""
+    if not faq_pairs or not any(marker in user_msg for marker in POLICY_MARKERS):
+        return None
+
+    scored = []
+    for question, answer in faq_pairs:
+        if not any(marker in question for marker in POLICY_MARKERS):
+            continue
+        score = 0
+        if "怎麼預約" in question and "預約" in user_msg:
+            score += 12
+        if ("訂金" in user_msg or "定金" in user_msg) and ("訂金" in question or "定金" in question):
+            score += 12
+        if any(word in user_msg for word in ("取消", "改時間", "改期", "更改")) and any(
+            word in question for word in ("取消", "更改", "改時間", "改期")
+        ):
+            score += 12
+        if "遲到" in user_msg and "遲到" in question:
+            score += 12
+        for marker in POLICY_MARKERS:
+            if marker in user_msg and marker in question:
+                score += 2
+        clean_q = (
+            question.replace("請問", "")
+            .replace("嗎", "")
+            .replace("？", "")
+            .replace("?", "")
+            .strip()
+        )
+        if clean_q and clean_q in user_msg:
+            score += 8
+        if score > 0:
+            scored.append((score, answer, question))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score = scored[0][0]
+    if top_score < 6:
+        return None
+
+    answers = []
+    seen = set()
+    for score, answer, _question in scored:
+        if score < max(6, top_score - 4):
+            continue
+        if answer in seen:
+            continue
+        seen.add(answer)
+        answers.append(answer.strip())
+        if len(answers) >= 2:
+            break
+    return "\n".join(answers) if answers else None
 
 def log_unanswered_question(spreadsheet_key, question_text):
     try:
@@ -348,19 +417,20 @@ def ask_model(store_name, knowledge, user_msg, history):
     if _groq is None:
         return None
     system_prompt = f"""
-你是{store_name}的 AI 智能店長。對客人要像值班店長：聽得懂同一段對話的前後文，會把知識庫裡的資料自己整理成回答。語氣親切、具體，150 字以內。
+你是{store_name}的 AI 智能店長。對客人要像值班店長：聽得懂同一段對話的前後文。語氣親切、具體，150 字以內。
 
 【店家知識庫，含店長後來補充的答案】
 {knowledge}
 
 怎麼回答：
-1. 客人問介紹、位置、營業、推薦、怎麼來、怎麼預約時，用知識庫裡的店名、地址、時間、招牌、注意事項組合成完整介紹。題目文字不必一模一樣。
-2. 「這個、那個、剛剛那個」要接上一句在問什麼。對話紀錄看得到剛才的菜名、價格或服務。
+1. 客人問介紹、位置、營業、推薦、怎麼來時，用知識庫裡的店名、地址、時間、招牌、注意事項組合成完整介紹。題目文字不必一模一樣。
+2. 「這個、那個、剛剛那個」要接上一句在問什麼。
 3. 有相關圖片時，回答後加一句「請參考下方圖片」。
-4. 價格、地址、時間、規定只能引用知識庫原文，不能猜想。
-5. 知識庫完全沒有這件事時，才在回覆加上 [UNANSWERED]，並請客人稍候。已經能回答一部分時，先回答知道的部分，不要加這個標籤。
-6. 標成「【補充解答】」的內容是店長確認過的，優先採用。
-7. 在句子裡自然放 1 到 2 個小表情，要對應該句在講的事。介紹或打招呼用 😊 或 ✨，地址用 📍，招牌食物用 😋，寵物用 🐶 或 🐱，道謝用 🙏。不要每則都用同一個，也不要一直堆在最後。
+4. 價格、地址、時間只能引用知識庫，不能猜想。
+5. 預約、訂金／定金、取消、改期、遲到、保留時間等規定：必須嚴格依照知識庫原文回覆，可稍作文句通順，但不得改寫含義、不得合併成另一套規則、不得省略手續費或證明文件等條件、不得自行發明「逾時不退」這類原句沒有的說法。
+6. 知識庫完全沒有這件事時，才在回覆加上 [UNANSWERED]，並請客人稍候。已經能回答一部分時，先回答知道的部分，不要加這個標籤。
+7. 標成「【補充解答】」的內容是店長確認過的，優先採用。
+8. 在句子裡自然放 1 到 2 個小表情。不要每則都用同一個，也不要一直堆在最後。
 """
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend({"role": item["role"], "content": item["content"]} for item in history)
@@ -371,7 +441,7 @@ def ask_model(store_name, knowledge, user_msg, history):
                 model=model,
                 messages=messages,
                 max_tokens=300,
-                temperature=0.4,
+                temperature=0.2,
             )
             print(f"已使用模型 {model}，店家 {store_name}")
             return response.choices[0].message.content
@@ -410,8 +480,12 @@ def handle_message(event, store):
     user_id = getattr(event.source, "user_id", None)
     key = session_key(store, user_id)
     history = [{"role": item["role"], "content": item["content"]} for item in recent_turns(key)]
-    knowledge, image_map = get_dynamic_knowledge_base(store["spreadsheet_key"])
-    reply_text = ask_model(store["name"], knowledge, user_msg, history)
+    knowledge, image_map, faq_pairs = get_dynamic_knowledge_base(store["spreadsheet_key"])
+    reply_text = match_policy_faq(user_msg, faq_pairs)
+    if reply_text:
+        print("規定類問題改用知識庫原文回答")
+    else:
+        reply_text = ask_model(store["name"], knowledge, user_msg, history)
     if reply_text:
         if "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
