@@ -35,6 +35,9 @@ _store_cache = {"at": 0, "stores": {}}
 _sessions = {}
 SESSION_TURNS = 8
 SESSION_SECONDS = 30 * 60
+PAUSE_SECONDS = 60 * 60
+_pause_until = {}
+_pause_loaded = set()
 
 MODELS = [
     "qwen/qwen3.8-27b",
@@ -572,10 +575,70 @@ def should_collect_miss(user_msg, faq_pairs, tagged_unanswered):
     return faq_coverage_score(text, faq_pairs) < 6
 
 
+def load_pauses(spreadsheet_key):
+    if spreadsheet_key in _pause_loaded:
+        return
+    gc = get_gspread_client()
+    sh = gc.open_by_key(spreadsheet_key)
+    try:
+        ws = sh.worksheet("暫停名單")
+    except Exception:
+        ws = sh.add_worksheet(title="暫停名單", rows="200", cols="2")
+        ws.append_row(["user_id", "paused_until"])
+    now = time.time()
+    for row in ws.get_all_values()[1:]:
+        if len(row) < 2 or not row[0]:
+            continue
+        try:
+            until = float(row[1])
+        except ValueError:
+            continue
+        if until > now:
+            _pause_until[f"{spreadsheet_key}:{row[0]}"] = until
+    _pause_loaded.add(spreadsheet_key)
+
+
+def pause_deadline(store, user_id):
+    if not user_id:
+        return 0
+    try:
+        load_pauses(store["spreadsheet_key"])
+    except Exception as exc:
+        print("讀取暫停名單失敗:", repr(exc))
+    return _pause_until.get(f"{store['spreadsheet_key']}:{user_id}", 0)
+
+
+def mark_paused(store, user_id):
+    if not user_id:
+        return
+    until = time.time() + PAUSE_SECONDS
+    spreadsheet_key = store["spreadsheet_key"]
+    _pause_until[f"{spreadsheet_key}:{user_id}"] = until
+    try:
+        load_pauses(spreadsheet_key)
+        ws = get_gspread_client().open_by_key(spreadsheet_key).worksheet("暫停名單")
+        values = ws.get_all_values()
+        found = None
+        for index, row in enumerate(values[1:], start=2):
+            if row and row[0] == user_id:
+                found = index
+                break
+        if found:
+            ws.update_cell(found, 2, str(int(until)))
+        else:
+            ws.append_row([user_id, str(int(until))])
+    except Exception as exc:
+        print("寫入暫停名單失敗:", repr(exc))
+
+
 def handle_message(event, store):
     user_msg = event.message.text
     user_id = getattr(event.source, "user_id", None)
     key = session_key(store, user_id)
+    if user_id and time.time() < pause_deadline(store, user_id):
+        mark_paused(store, user_id)
+        print("店家接手中，順延 60 分鐘且不回覆:", user_id[:8])
+        return
     _knowledge, image_map, faq_pairs = get_dynamic_knowledge_base(store["spreadsheet_key"])
     hit = strict_faq_answer(user_msg, faq_pairs)
     image_url = None
@@ -584,9 +647,10 @@ def handle_message(event, store):
         image_url = image_map.get(matched_question)
         print("只回設定題目:", matched_question[:40])
     else:
+        mark_paused(store, user_id)
         reply_text = HANDOFF_REPLY
         log_unanswered_question(store["spreadsheet_key"], user_msg)
-        print("未在設定題目中，交店長:", user_msg[:80])
+        print("未在設定題目中，交店長並暫停 60 分鐘:", user_msg[:80])
     remember_turn(key, "user", user_msg)
     remember_turn(key, "assistant", reply_text)
     messages = [TextMessage(text=reply_text)]
