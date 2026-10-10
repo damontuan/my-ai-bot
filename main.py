@@ -496,18 +496,42 @@ def faq_content_tokens(question):
     return tokens
 
 
-def best_faq_hit(user_msg, faq_pairs):
-    best = None
+def normalize_faq_text(text):
+    return re.sub(r"[\s，。！？、,.!?~～…「」\"'()（）:：]", "", text or "")
+
+
+def strict_faq_answer(user_msg, faq_pairs):
+    """只有客人的話涵蓋某題設定問法，才回該題原文。多題同分視為不確定。"""
+    message = normalize_faq_text(user_msg)
+    if len(message) < 2:
+        return None
+    scored = []
     for question, answer in faq_pairs:
-        if not answer:
+        cleaned = normalize_faq_text(question)
+        if len(cleaned) < 2 or not str(answer).strip():
             continue
-        hits = [token for token in faq_content_tokens(question) if token in user_msg]
-        if not hits:
+        if cleaned in message or (len(message) >= 4 and message in cleaned):
+            scored.append((1000 + len(cleaned), str(answer).strip(), question))
             continue
-        rank = (max(len(token) for token in hits), len(hits))
-        if best is None or rank > best[0]:
-            best = (rank, answer.strip(), question)
-    return None if best is None else (best[1], best[2])
+        best_len = 0
+        for size in range(min(len(cleaned), 12), 3, -1):
+            for index in range(0, len(cleaned) - size + 1):
+                token = cleaned[index:index + size]
+                if token in FAQ_STOPWORDS:
+                    continue
+                if token in message:
+                    best_len = size
+                    break
+            if best_len:
+                break
+        if best_len >= 4:
+            scored.append((best_len, str(answer).strip(), question))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if len(scored) > 1 and scored[1][0] == scored[0][0]:
+        return None
+    return scored[0][1], scored[0][2]
 
 
 def faq_coverage_score(user_msg, faq_pairs):
@@ -552,45 +576,19 @@ def handle_message(event, store):
     user_msg = event.message.text
     user_id = getattr(event.source, "user_id", None)
     key = session_key(store, user_id)
-    history = [{"role": item["role"], "content": item["content"]} for item in recent_turns(key)]
-    knowledge, image_map, faq_pairs = get_dynamic_knowledge_base(store["spreadsheet_key"])
-    reply_text = match_policy_faq(user_msg, faq_pairs)
-    used_known = bool(reply_text)
-    if reply_text:
-        print("規定類問題改用知識庫原文回答")
+    _knowledge, image_map, faq_pairs = get_dynamic_knowledge_base(store["spreadsheet_key"])
+    hit = strict_faq_answer(user_msg, faq_pairs)
+    image_url = None
+    if hit:
+        reply_text, matched_question = hit
+        image_url = image_map.get(matched_question)
+        print("只回設定題目:", matched_question[:40])
     else:
-        hit = best_faq_hit(user_msg, faq_pairs)
-        if hit:
-            reply_text = hit[0]
-            used_known = True
-            print("改用知識庫原文回答:", hit[1][:40])
-        elif should_collect_miss(user_msg, faq_pairs, False):
-            reply_text = HANDOFF_REPLY
-            log_unanswered_question(store["spreadsheet_key"], user_msg)
-            print("不確定，改交店長:", user_msg[:80])
-        else:
-            reply_text = ask_model(store["name"], knowledge, user_msg, history)
-    tagged_unanswered = False
-    if reply_text and reply_text != HANDOFF_REPLY:
-        if "</think>" in reply_text:
-            reply_text = reply_text.split("</think>")[-1].strip()
-        if "[UNANSWERED]" in reply_text:
-            tagged_unanswered = True
-            reply_text = HANDOFF_REPLY
-    if not reply_text:
         reply_text = HANDOFF_REPLY
-        tagged_unanswered = True
-    if not used_known and (tagged_unanswered or reply_text == HANDOFF_REPLY):
-        if reply_text == HANDOFF_REPLY and not tagged_unanswered:
-            pass
-        else:
-            log_unanswered_question(store["spreadsheet_key"], user_msg)
-            print("已收錄未命中問題:", user_msg[:80])
-    if not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", reply_text[-6:]):
-        reply_text = f"{reply_text} {pick_emoji(user_msg)}"
+        log_unanswered_question(store["spreadsheet_key"], user_msg)
+        print("未在設定題目中，交店長:", user_msg[:80])
     remember_turn(key, "user", user_msg)
     remember_turn(key, "assistant", reply_text)
-    image_url = match_image(user_msg, image_map)
     messages = [TextMessage(text=reply_text)]
     if image_url:
         messages.append(ImageMessage(original_content_url=image_url, preview_image_url=image_url))
