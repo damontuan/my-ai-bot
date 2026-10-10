@@ -428,7 +428,7 @@ def ask_model(store_name, knowledge, user_msg, history):
 3. 有相關圖片時，回答後加一句「請參考下方圖片」。
 4. 價格、地址、時間只能引用知識庫，不能猜想。
 5. 預約、訂金／定金、取消、改期、遲到、保留時間等規定：必須嚴格依照知識庫原文回覆，可稍作文句通順，但不得改寫含義、不得合併成另一套規則、不得省略手續費或證明文件等條件、不得自行發明「逾時不退」這類原句沒有的說法。
-6. 知識庫沒有明確寫到的題目（含店家不做的服務、沒列出的項目）：可以依店名／既有範圍簡短回覆客人，但回覆裡務必加上 [UNANSWERED]，方便店長之後補進知識庫。只有知識庫裡已有對應問答時，才不要加這個標籤。
+6. 知識庫沒有明確寫到的題目，不要推測、不要用常識補規定、不要回答能不能來、身體狀況、取消或改期。只回覆 [UNANSWERED]，不要再寫其他內容。
 7. 標成「【補充解答】」的內容是店長確認過的，優先採用。
 8. 在句子裡自然放 1 到 2 個小表情。不要每則都用同一個，也不要一直堆在最後。
 """
@@ -473,6 +473,41 @@ def match_image(user_msg, image_map):
     if any(word in user_msg for word in ("價目", "價格", "菜單", "款式")):
         return next(iter(image_map.values()))
     return None
+
+
+HANDOFF_REPLY = "這個問題我先請店長回覆你，請稍候 🙏"
+FAQ_STOPWORDS = {
+    "可以", "怎麼", "什麼", "請問", "你們", "我們", "是否", "一下", "還是", "如果",
+    "因為", "這個", "那個", "好嗎", "店裡", "現在", "今天", "謝謝", "需要", "直接",
+    "請問", "多少", "怎樣", "如何", "會不", "有沒", "還有",
+}
+
+
+def faq_content_tokens(question):
+    tokens = []
+    for size in (4, 3, 2):
+        for index in range(0, max(0, len(question) - size + 1)):
+            token = question[index:index + size]
+            if not re.fullmatch(r"[\u4e00-\u9fff]+", token):
+                continue
+            if token in FAQ_STOPWORDS:
+                continue
+            tokens.append(token)
+    return tokens
+
+
+def best_faq_hit(user_msg, faq_pairs):
+    best = None
+    for question, answer in faq_pairs:
+        if not answer:
+            continue
+        hits = [token for token in faq_content_tokens(question) if token in user_msg]
+        if not hits:
+            continue
+        rank = (max(len(token) for token in hits), len(hits))
+        if best is None or rank > best[0]:
+            best = (rank, answer.strip(), question)
+    return None if best is None else (best[1], best[2])
 
 
 def faq_coverage_score(user_msg, faq_pairs):
@@ -520,27 +555,37 @@ def handle_message(event, store):
     history = [{"role": item["role"], "content": item["content"]} for item in recent_turns(key)]
     knowledge, image_map, faq_pairs = get_dynamic_knowledge_base(store["spreadsheet_key"])
     reply_text = match_policy_faq(user_msg, faq_pairs)
-    used_policy = bool(reply_text)
+    used_known = bool(reply_text)
     if reply_text:
         print("規定類問題改用知識庫原文回答")
     else:
-        reply_text = ask_model(store["name"], knowledge, user_msg, history)
+        hit = best_faq_hit(user_msg, faq_pairs)
+        if hit:
+            reply_text = hit[0]
+            used_known = True
+            print("改用知識庫原文回答:", hit[1][:40])
+        elif should_collect_miss(user_msg, faq_pairs, False):
+            reply_text = HANDOFF_REPLY
+            log_unanswered_question(store["spreadsheet_key"], user_msg)
+            print("不確定，改交店長:", user_msg[:80])
+        else:
+            reply_text = ask_model(store["name"], knowledge, user_msg, history)
     tagged_unanswered = False
-    if reply_text:
+    if reply_text and reply_text != HANDOFF_REPLY:
         if "</think>" in reply_text:
             reply_text = reply_text.split("</think>")[-1].strip()
         if "[UNANSWERED]" in reply_text:
             tagged_unanswered = True
-            reply_text = reply_text.replace("[UNANSWERED]", "").strip()
+            reply_text = HANDOFF_REPLY
     if not reply_text:
-        reply_text = "店長目前正在確認，請稍後再問一次，或直接留訊息給我們。"
+        reply_text = HANDOFF_REPLY
         tagged_unanswered = True
-    # 規定類已命中知識庫原文，不收錄；其餘知識庫對不到的問題要收錄
-    if used_policy:
-        pass
-    elif should_collect_miss(user_msg, faq_pairs, tagged_unanswered):
-        log_unanswered_question(store["spreadsheet_key"], user_msg)
-        print("已收錄未命中問題:", user_msg[:80])
+    if not used_known and (tagged_unanswered or reply_text == HANDOFF_REPLY):
+        if reply_text == HANDOFF_REPLY and not tagged_unanswered:
+            pass
+        else:
+            log_unanswered_question(store["spreadsheet_key"], user_msg)
+            print("已收錄未命中問題:", user_msg[:80])
     if not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", reply_text[-6:]):
         reply_text = f"{reply_text} {pick_emoji(user_msg)}"
     remember_turn(key, "user", user_msg)
