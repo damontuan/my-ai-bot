@@ -84,19 +84,33 @@ def _clean_store(item):
     }
 
 
+def disabled_store_ids():
+    raw = (os.getenv("DISABLED_STORE_IDS") or "default,meijia").strip()
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def store_enabled(store):
+    if not store:
+        return False
+    return str(store.get("id") or "").strip().lower() not in disabled_store_ids()
+
+
 def legacy_store():
     token = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
     secret = (os.getenv("LINE_CHANNEL_SECRET") or "").strip()
     sheet = (os.getenv("SPREADSHEET_KEY") or "").strip()
     if not (token and secret and sheet):
         return None
-    return {
+    store = {
         "id": "default",
         "name": (os.getenv("STORE_NAME") or "極上居酒屋").strip(),
         "spreadsheet_key": sheet,
         "line_token": token,
         "line_secret": secret,
     }
+    if not store_enabled(store):
+        return None
+    return store
 
 
 def stores_from_json():
@@ -199,8 +213,10 @@ def get_handler(store):
     @handler.add(MessageEvent, message=TextMessageContent)
     def on_message(event):
         current = legacy_store() if store_id == "default" else load_registry().get(store_id)
-        if current:
+        if current and store_enabled(current):
             handle_message(event, current)
+        else:
+            print("店家已停用，略過回覆:", store_id)
 
     _handlers[secret] = handler
     return handler
