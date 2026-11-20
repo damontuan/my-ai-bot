@@ -681,7 +681,16 @@ def handle_message(event, store):
 
 async def dispatch(store_id, request, signature):
     body = (await request.body()).decode("utf-8")
+    if not store_id and "default" in disabled_store_ids():
+        print("預設店家已停用，收訊但不回覆")
+        return "OK"
+    if store_id and store_id.strip().lower() in disabled_store_ids():
+        print("店家已停用，收訊但不回覆:", store_id)
+        return "OK"
     store = resolve_store(store_id)
+    if not store_enabled(store):
+        print("店家已停用，收訊但不回覆:", store.get("id"))
+        return "OK"
     handler = get_handler(store)
     try:
         handler.handle(body, signature or "")
