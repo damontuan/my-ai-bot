@@ -85,7 +85,7 @@ def _clean_store(item):
 
 
 def disabled_store_ids():
-    raw = (os.getenv("DISABLED_STORE_IDS") or "default,meijia").strip()
+    raw = (os.getenv("DISABLED_STORE_IDS") or "default,meijia,kma").strip()
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
